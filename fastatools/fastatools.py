@@ -1,7 +1,55 @@
-from Bio import Entrez
 import pandas as pd
-from pathlib import Path
 import json
+from pathlib import Path
+from Bio import Entrez
+from abc import ABC, abstractmethod
+
+
+class FastaDatasetMaker(ABC):
+    def __init__(self, raw_path, fasta_path, processed_path, email, ncbi_api_key):
+        self.raw_path = raw_path
+        self.fasta_path = fasta_path
+        self.processed_path = processed_path
+        self.email = email
+        self.ncbi_api_key = ncbi_api_key
+        self.column_names = ['pdb_code', 'chain',
+                             'chain_type', 'description', 'sequence']
+        self.raw_dataframe = self.make_raw_dataframe()
+        self.pdb_codes = self.get_pdb_codes()
+
+    @abstractmethod
+    def filter_dataframe(self, df):
+        pass
+
+    @abstractmethod
+    def format_dataframe(self, df):
+        pass
+
+    @abstractmethod
+    def assign_chain_type(self, df):
+        pass
+
+    def make_raw_dataframe(self):
+        return (pd.read_csv(self.raw_path, sep='\t')
+                .pipe(self.format_dataframe)
+                .pipe(self.filter_dataframe))
+
+    def get_pdb_codes(self):
+        return self.raw_dataframe['pdb_code'].str[0:4].unique()
+
+    def make_fasta(self):
+        if not self.fasta_path.is_file():
+            write_fasta_from_ncbi_query(
+                self.pdb_codes, self.fasta_path, self.email, self.ncbi_api_key)
+
+    def make_dataset(self):
+        self.make_fasta()
+        (make_fasta_dataframe(self.fasta_path)
+            .pipe(process_header)
+            .pipe(self.assign_chain_type)
+            .pipe(collapse_rows, 'chain')
+            .pipe(organize_fasta_dataframe, self.column_names)
+            .to_csv(self.processed_path, index=False))
 
 
 def read_file(filepath):
@@ -21,16 +69,17 @@ def process_fasta(file_text):
     return [separate_header(sequence) for sequence in sequences]
 
 
-# returns lists sequences and headers from FASTA file
+# returns a dataframe of sequences and headers from a FASTA file
 def make_fasta_dataframe(filepath):
     fasta = read_file(filepath)
     return pd.DataFrame(process_fasta(fasta), columns=['header', 'sequence'])
 
 
-def clean_df_columns(df, replacements):
+def clean_dataframe_header(df, replacements):
     df.columns = df.columns.str.strip().str.lower()
     for key, value in replacements.items():
         df.columns = df.columns.str.replace(key, value, regex=False)
+    return df
 
 
 def make_query(pdb_code):
@@ -74,9 +123,9 @@ def get_ncbi_search_results(pdb_codes):
     return search_results, id_list
 
 
-def write_fasta_from_ncbi_query(pdb_codes, filepath):
-    Entrez.email = "ehill3@bidmc.harvard.edu"
-    Entrez.api_key = 'd8b7d4b6c3abcadbea8bcd405fa992c55409'
+def write_fasta_from_ncbi_query(pdb_codes, filepath, email, api_key):
+    Entrez.email = email
+    Entrez.api_key = api_key
     search_results, id_list = get_ncbi_search_results(pdb_codes)
     id_count = len(id_list)
     print(f'Downloading {id_count} records')
@@ -100,26 +149,23 @@ def process_header(df):
     header = df['header']
     header = header.str.split('|')
     df['pdb_code'] = header.str[1]
-    df['chain'] = header.str[2].str[0]
-    df['description'] = header.str[2].str.split(', ').str[1]
+    description = header.str[2]
+    df['chain'] = description.str[0]
+    df['description'] = description.str.split(', ').str[-1]
     return df[['pdb_code', 'chain', 'description', 'sequence']]
 
 
-def save_dataframe(filename, df):
-    df.to_csv(filename, index=False)
+def organize_fasta_dataframe(df, column_names):
+    df = df[column_names]
+    return df.sort_values(['pdb_code', 'chain'], ignore_index=True)
 
 
 def sort_then_join(lst):
     return ','.join(sorted(lst))
 
 
-def reformat_fasta_dataframe(df, column_names):
-    df = df[column_names]
-    return df.sort_values(['pdb_code', 'chain'], ignore_index=True)
-
-
-# collapse rows that different only by chains
-def collapse_rows(df, row_to_collapse):
-    columns = [n for n in df.columns if n != row_to_collapse]
-    df = df.groupby(columns)[row_to_collapse].apply(sort_then_join)
+# collapse rows that differ only by one column
+def collapse_rows(df, column_to_collapse):
+    columns = [n for n in df.columns if n != column_to_collapse]
+    df = df.groupby(columns)[column_to_collapse].apply(sort_then_join)
     return df.reset_index()
