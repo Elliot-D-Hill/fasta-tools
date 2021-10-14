@@ -6,15 +6,17 @@ from abc import ABC, abstractmethod
 
 
 class FastaDatasetMaker(ABC):
-    def __init__(self, raw_path, fasta_path, processed_path, email, ncbi_api_key):
+    def __init__(self, raw_path, cleaned_path, fasta_path, processed_path, email, ncbi_api_key):
         self.raw_path = raw_path
+        self.cleaned_path = cleaned_path
         self.fasta_path = fasta_path
         self.processed_path = processed_path
         self.email = email
         self.ncbi_api_key = ncbi_api_key
         self.column_names = ['pdb_code', 'chain',
                              'chain_type', 'description', 'sequence']
-        self.raw_dataframe = self.make_raw_dataframe()
+        self.make_cleaned_dataframe()
+        self.df = read_dataframe(self.cleaned_path)
         self.pdb_codes = self.get_pdb_codes()
 
     @abstractmethod
@@ -29,30 +31,38 @@ class FastaDatasetMaker(ABC):
     def assign_chain_type(self, df):
         pass
 
-    def make_raw_dataframe(self):
-        return (pd.read_csv(self.raw_path, sep='\t')
-                .pipe(self.format_dataframe)
-                .pipe(self.filter_dataframe))
+    def make_cleaned_dataframe(self):
+        (read_dataframe(self.raw_path)
+            .pipe(self.format_dataframe)
+            .pipe(self.filter_dataframe)
+            .reset_index(drop=True)
+            .to_csv(self.cleaned_path, index=False)
+         )
 
     def get_pdb_codes(self):
-        return self.raw_dataframe['pdb_code'].str[0:4].unique()
-
-    def make_fasta(self):
-        if not self.fasta_path.is_file():
-            write_fasta_from_ncbi_query(
-                self.pdb_codes, self.fasta_path, self.email, self.ncbi_api_key)
+        return self.df['pdb_code'].str[0:4].unique()
 
     def make_dataset(self):
-        self.make_fasta()
+        write_fasta_from_ncbi_query(
+            self.pdb_codes, self.fasta_path, self.email, self.ncbi_api_key)
         (make_fasta_dataframe(self.fasta_path)
             .pipe(process_header)
             .pipe(self.assign_chain_type)
             .pipe(collapse_rows, 'chain')
             .pipe(organize_fasta_dataframe, self.column_names)
-            .to_csv(self.processed_path, index=False))
+            .to_csv(self.processed_path, index=False)
+         )
 
 
-def read_file(filepath):
+def read_dataframe(filepath):
+    extension = str(filepath).split('.')[-1]
+    if extension == 'tsv':
+        return pd.read_csv(filepath, sep='\t')
+    elif extension == 'csv':
+        return pd.read_csv(filepath, sep=',')
+
+
+def read_text_file(filepath):
     with open(filepath, "r") as f:
         return f.read()
 
@@ -71,7 +81,7 @@ def process_fasta(file_text):
 
 # returns a dataframe of sequences and headers from a FASTA file
 def make_fasta_dataframe(filepath):
-    fasta = read_file(filepath)
+    fasta = read_text_file(filepath)
     return pd.DataFrame(process_fasta(fasta), columns=['header', 'sequence'])
 
 
@@ -93,7 +103,7 @@ def make_fasta_id_list(pdb_codes):
         query = make_query(pdb_code)
         print(f'PDB code: {pdb_code}: {i+1} / {n_codes}')
         search_handle = Entrez.esearch(
-            db="protein", term=query, idtype="acc", usehistory="y")
+            db="protein", term=query, idtype="acc", usehistory="y", retmax=50)
         search_results = Entrez.read(search_handle)
         search_handle.close()
         for _id in search_results['IdList']:
@@ -123,26 +133,35 @@ def get_ncbi_search_results(pdb_codes):
     return search_results, id_list
 
 
+def fetch_fasta(search_results, id_count):
+    fetch_handle = Entrez.efetch(
+        db="protein",
+        rettype="fasta",
+        retmode="text",
+        retstart=0,
+        retmax=id_count,
+        webenv=search_results["WebEnv"],
+        query_key=search_results["QueryKey"],
+        idtype="acc"
+    )
+    data = fetch_handle.read()
+    fetch_handle.close()
+    return data
+
+
+def write_fasta_from_ncbi_fetch(search_results, id_list, filepath):
+    id_count = len(id_list)
+    print(f'Downloading {id_count} records')
+    with open(filepath, "w") as out_handle:
+        data = fetch_fasta(search_results, id_count)
+        out_handle.write(data)
+
+
 def write_fasta_from_ncbi_query(pdb_codes, filepath, email, api_key):
     Entrez.email = email
     Entrez.api_key = api_key
     search_results, id_list = get_ncbi_search_results(pdb_codes)
-    id_count = len(id_list)
-    print(f'Downloading {id_count} records')
-    with open(filepath, "w") as out_handle:
-        fetch_handle = Entrez.efetch(
-            db="protein",
-            rettype="fasta",
-            retmode="text",
-            retstart=0,
-            retmax=len(id_list),
-            webenv=search_results["WebEnv"],
-            query_key=search_results["QueryKey"],
-            idtype="acc"
-        )
-        data = fetch_handle.read()
-        fetch_handle.close()
-        out_handle.write(data)
+    write_fasta_from_ncbi_fetch(search_results, id_list, filepath)
 
 
 def process_header(df):
