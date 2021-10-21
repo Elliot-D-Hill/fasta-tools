@@ -17,16 +17,11 @@ class FastaDatasetMaker(DatasetMaker):
     def assign_chain_type(self, df):
         pass
 
-    def format_dataframe(self, df):
-        return self.process_header(df)
-
-    def filter_dataframe(self, df):
-        return df
-
     def transform_dataframe(self, df):
         return (df
-                .pipe(self.assign_chain_type)
+                .pipe(self.process_header)
                 .pipe(self.collapse_rows, 'chain')
+                .pipe(self.assign_chain_type)
                 )
 
     def organize_dataframe(self, df):
@@ -40,16 +35,18 @@ class FastaDatasetMaker(DatasetMaker):
         description = header.str[2]
         df['chain'] = description.str[0]
         df['description'] = description.str.split(', ').str[-1]
-        return df[['pdb_code', 'chain', 'description', 'sequence']]
+        return df.drop('header', axis=1)
 
     def sort_then_join(self, lst):
         return ','.join(sorted(lst))
 
-    # collapse rows that differ only by one column
+    # collapse rows that differ only by specified column
     def collapse_rows(self, df, column_to_collapse):
         columns = [n for n in df.columns if n != column_to_collapse]
-        df = df.groupby(columns)[column_to_collapse].apply(self.sort_then_join)
-        return df.reset_index()
+        return (df
+                .groupby(columns)[column_to_collapse]
+                .apply(self.sort_then_join)
+                .reset_index())
 
 
 def read_text_file(filepath):
@@ -91,17 +88,19 @@ def make_fasta_id_list(pdb_codes):
     n_codes = len(pdb_codes)
     for i, pdb_code in enumerate(pdb_codes):
         query = make_query(pdb_code)
-        print(f'PDB code: {pdb_code}: {i+1} / {n_codes}')
         search_handle = Entrez.esearch(
             db="protein", term=query, idtype="acc", usehistory="y", retmax=50)
         search_results = Entrez.read(search_handle)
         search_handle.close()
         for _id in search_results['IdList']:
             id_list.append(_id)
+        print(f'PDB code: {pdb_code}: {i+1} / {n_codes}')
+    print(f'Search for {n_codes} proteins is complete')
     return id_list
 
 
 def get_fasta_id_list(pdb_codes):
+    print(f'Searching for {len(pdb_codes)} PDB entries')
     id_list_filepath = Path('Data/Raw/fasta_id_list.txt')
     if not id_list_filepath.is_file():
         id_list = make_fasta_id_list(pdb_codes)
@@ -114,9 +113,8 @@ def get_fasta_id_list(pdb_codes):
 
 
 def get_ncbi_search_results(pdb_codes):
-    print(f'Searching for {len(pdb_codes)} PDB entries')
     id_list = get_fasta_id_list(pdb_codes)
-    print(f'Number of IDs (chains): {len(id_list)}')
+    print(f'Number of IDs (chains) found: {len(id_list)}')
     search_handle = Entrez.epost(db='protein', id=','.join(map(str, id_list)))
     search_results = Entrez.read(search_handle, validate=True)
     search_handle.close()
