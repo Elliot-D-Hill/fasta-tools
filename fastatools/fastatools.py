@@ -8,8 +8,7 @@ from abc import abstractmethod
 
 class FastaDatasetMaker(DatasetMaker):
 
-    def __init__(self, raw_path, processed_path):
-        super().__init__(raw_path, processed_path)
+    def __init__(self):
         self.column_names = ['pdb_code', 'chain',
                              'chain_type', 'description', 'sequence']
 
@@ -67,8 +66,7 @@ def process_fasta(file_text):
 
 
 # returns a dataframe of sequences and headers from a FASTA file
-def make_dataframe_from_fasta(fasta_path):
-    fasta = read_text_file(fasta_path)
+def make_dataframe_from_fasta(fasta):
     return pd.DataFrame(process_fasta(fasta), columns=['header', 'sequence'])
 
 
@@ -137,16 +135,16 @@ def fetch_fasta(search_results, id_count):
     return data
 
 
-def write_fasta_from_ncbi_fetch(search_results, id_list, filepath):
-    id_count = len(id_list)
-    print(f'Downloading {id_count} records')
-    with open(filepath, "w") as out_handle:
-        data = fetch_fasta(search_results, id_count)
-        out_handle.write(data)
-
-
-def write_fasta_from_ncbi_query(pdb_codes, filepath, email, api_key):
+def get_fasta_from_ncbi_query(pdb_codes, email, api_key):
     Entrez.email = email
     Entrez.api_key = api_key
     search_results, id_list = get_ncbi_search_results(pdb_codes)
-    write_fasta_from_ncbi_fetch(search_results, id_list, filepath)
+    id_count = len(id_list)
+    print(f'Downloading {id_count} records')
+    return fetch_fasta(search_results, id_count)
+
+
+def write_fasta_from_ncbi_query(filepath, pdb_codes, email, api_key):
+    data = get_fasta_from_ncbi_query(pdb_codes, email, api_key)
+    with open(filepath, "w") as out_handle:
+        out_handle.write(data)
